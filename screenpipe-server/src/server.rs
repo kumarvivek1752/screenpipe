@@ -648,6 +648,13 @@ struct DownloadPipeRequest {
 }
 
 #[derive(Deserialize)]
+struct DownloadPipePrivateRequest {
+    url: String,
+    pipe_name: String,
+    pipe_id: String,
+}
+
+#[derive(Deserialize)]
 struct RunPipeRequest {
     pipe_id: String,
 }
@@ -665,6 +672,31 @@ async fn download_pipe_handler(
 ) -> Result<JsonResponse<serde_json::Value>, (StatusCode, JsonResponse<Value>)> {
     debug!("Downloading pipe: {}", payload.url);
     match state.pipe_manager.download_pipe(&payload.url).await {
+        Ok(pipe_dir) => Ok(JsonResponse(json!({
+            "data": {
+                "pipe_id": pipe_dir,
+                "message": "pipe downloaded successfully"
+            },
+            "success": true
+        }))),
+        Err(e) => {
+            error!("Failed to download pipe: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                JsonResponse(json!({
+                    "error": format!("failed to download pipe: {}", e),
+                    "success": false
+                })),
+            ))
+        }
+    }
+}
+
+async fn download_pipe_private_handler(
+    State(state): State<Arc<AppState>>,
+    JsonResponse(payload): JsonResponse<DownloadPipePrivateRequest>,
+) -> Result<JsonResponse<serde_json::Value>, (StatusCode, JsonResponse<Value>)> {
+    match state.pipe_manager.download_pipe_private(&payload.url, &payload.pipe_name, &payload.pipe_id).await {
         Ok(pipe_dir) => Ok(JsonResponse(json!({
             "data": {
                 "pipe_id": pipe_dir,
@@ -1128,7 +1160,7 @@ pub(crate) async fn add_to_database(
                     let output_dir = state.screenpipe_dir.join("data");
                     let time = Utc::now();
                     let formatted_time = time.format("%Y-%m-%d_%H-%M-%S").to_string();
-                    let video_file_path = PathBuf::from(output_dir)
+                    let video_file_path = output_dir
                         .join(format!("{}_{}.mp4", device_name, formatted_time))
                         .to_str()
                         .expect("Failed to create valid path")
@@ -1784,7 +1816,10 @@ async fn semantic_search_handler(
     let limit = query.limit.unwrap_or(10);
     let threshold = query.threshold.unwrap_or(0.3);
 
-    debug!("semantic search for '{}' with limit {} and threshold {}", query.text, limit, threshold);
+    debug!(
+        "semantic search for '{}' with limit {} and threshold {}",
+        query.text, limit, threshold
+    );
 
     // Generate embedding for search text
     let embedding = match generate_embedding(&query.text, 0).await {
@@ -1799,7 +1834,11 @@ async fn semantic_search_handler(
     };
 
     // Search database for similar embeddings
-    match state.db.search_similar_embeddings(embedding, limit, threshold).await {
+    match state
+        .db
+        .search_similar_embeddings(embedding, limit, threshold)
+        .await
+    {
         Ok(results) => {
             debug!("found {} similar results", results.len());
             Ok(JsonResponse(results))
@@ -1835,6 +1874,7 @@ pub fn create_router() -> Router<Arc<AppState>> {
         .route("/pipes/info/:pipe_id", get(get_pipe_info_handler))
         .route("/pipes/list", get(list_pipes_handler))
         .route("/pipes/download", post(download_pipe_handler))
+        .route("/pipes/download-private", post(download_pipe_private_handler))
         .route("/pipes/enable", post(run_pipe_handler))
         .route("/pipes/disable", post(stop_pipe_handler))
         .route("/pipes/update", post(update_pipe_config_handler))
@@ -1895,7 +1935,7 @@ async fn stream_frames_handler(
         };
 
         // Calculate duration in minutes between start and end time
-        let duration_minutes = (request.end_time - request.start_time).num_minutes().max(1) as i64;
+        let duration_minutes = (request.end_time - request.start_time).num_minutes().max(1);
 
         // Calculate center timestamp
         let center_timestamp = request.start_time + (request.end_time - request.start_time) / 2;
@@ -2211,4 +2251,3 @@ MERGED_VIDEO_PATH=$(echo "$MERGE_RESPONSE" | jq -r '.video_path')
 echo "Merged Video Path: $MERGED_VIDEO_PATH"
 
 */
-
